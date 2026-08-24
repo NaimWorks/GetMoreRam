@@ -95,6 +95,11 @@ final class AnisetteDataHelper
                     self.printOut("Error getting V3 headers: \(message ?? "no message")")
                     if let message = message,
                        message.contains("-45061") {
+                        if Keychain.shared.adiPbProvisioningContext == nil {
+                            // Imported (e.g. from SideStore): don't silently replace it with a new identity
+                            self.printOut("The imported anisette identity is not provisioned on \(self.url!.absoluteString)")
+                            throw "The imported anisette identity doesn't work with \(self.url!.absoluteString). Select the anisette server SideStore uses (and disable \"Try other servers\"), or tap \"Clean Up Keychain\" to start with a new identity."
+                        }
                         self.printOut("Error message contains -45061 (not provisioned), resetting adi.pb and retrying")
                         Keychain.shared.adiPb = nil
                         return try await provision()
