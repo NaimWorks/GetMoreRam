@@ -17,6 +17,7 @@ struct SettingsView: View {
     @State var teamId = ""
     @StateObject var viewModel : LoginViewModel
     @EnvironmentObject private var sharedModel : SharedModel
+    @ObservedObject private var authSettings = AuthenticationSettings.shared
     
     @State private var errorShow = false
     @State private var errorInfo = ""
@@ -26,6 +27,13 @@ struct SettingsView: View {
     
 
     var body: some View {
+        NavigationStack {
+            settingsForm
+                .navigationTitle("Settings")
+        }
+    }
+    
+    var settingsForm: some View {
         Form {
 
             Section {
@@ -54,12 +62,30 @@ struct SettingsView: View {
             }
             
             Section {
-                HStack {
-                    Text("Anisette Server URL")
-                    Spacer()
-                    TextField("", text: $sharedModel.anisetteServerURL)
-                        .multilineTextAlignment(.trailing)
+                NavigationLink {
+                    AnisetteServersView()
+                } label: {
+                    HStack {
+                        Text("Anisette Server")
+                        Spacer()
+                        Text(authSettings.selectedServer?.name ?? "None")
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                NavigationLink {
+                    AuthenticationHeadersView()
+                } label: {
+                    HStack {
+                        Text("Client Info / User-Agent")
+                        Spacer()
+                        Text(authSettings.useServerClientInfo ? "Server" :
+                                (HeaderPreset.all.first { $0.id == authSettings.currentPresetID }?.name ?? "Custom"))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            } header: {
+                Text("Authentication")
             }
             
             Section {
@@ -120,7 +146,11 @@ struct SettingsView: View {
                 }
                 if viewModel.needVerificationCode {
                     Section {
+                        Text("Enter the code shown on your trusted device (or sent by SMS).")
+                            .font(.footnote)
                         TextField("", text: $viewModel.verificationCode)
+                            .keyboardType(.numberPad)
+                            .textContentType(.oneTimeCode)
                             .disabled(viewModel.isVerificationCodeSubmitting)
                     } header: {
                         Text("Verification Code")

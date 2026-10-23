@@ -64,6 +64,13 @@ class LoginViewModel: ObservableObject {
         }
         
         AnisetteDataHelper.shared.loggingFunc = logging
+        
+        let settings = AuthenticationSettings.shared
+        Authentication.userAgentOverride = settings.useServerClientInfo ? nil : settings.userAgent
+        Authentication.progressHandler = logging
+        Authentication.anisetteDataRefreshHandler = {
+            try await AnisetteDataHelper.shared.getAnisetteData(refresh: true)
+        }
 
         defer {
             verificationCodeHandler = nil
@@ -77,7 +84,11 @@ class LoginViewModel: ObservableObject {
         }
 
         do {
-            let anisetteData = try await AnisetteDataHelper.shared.getAnisetteData()
+            let anisetteData = try await fetchAnisetteData(settings: settings, logging: logging)
+            if settings.useServerClientInfo {
+                // Use the server's user agent for GrandSlam too
+                Authentication.userAgentOverride = AnisetteDataHelper.shared.userAgent
+            }
 
             let (account, session) = try await AppleAPI.shared.authenticate(appleID: appleID, password: password, anisetteData: anisetteData) { [weak self] completionHandler in
                 guard let self else {
@@ -111,6 +122,34 @@ class LoginViewModel: ObservableObject {
             print(error)
             throw error
         }
+    }
+
+    /// Tries the selected anisette server, then the other ones if fallback is enabled.
+    private func fetchAnisetteData(settings: AuthenticationSettings, logging: (String) -> Void) async throws -> AnisetteData {
+        let servers = settings.serversToTry
+        guard !servers.isEmpty else {
+            throw "No anisette server configured. Add one in Settings."
+        }
+        
+        var lastError: Error?
+        for server in servers {
+            guard let url = URL(string: server.address) else { continue }
+            try Task.checkCancellation()
+            logging("Trying anisette server \(server.name) (\(server.address))")
+            AnisetteDataHelper.shared.configure(
+                server: url,
+                clientInfo: settings.clientInfo,
+                userAgent: settings.userAgent,
+                useServerClientInfo: settings.useServerClientInfo
+            )
+            do {
+                return try await AnisetteDataHelper.shared.getAnisetteData()
+            } catch {
+                logging("Anisette server \(server.address) failed: \(error.localizedDescription)")
+                lastError = error
+            }
+        }
+        throw lastError ?? "No anisette server could be reached"
     }
 
     private func prepareForVerification(using handler: @escaping (String?) -> Void) {

@@ -28,9 +28,23 @@ final class AnisetteDataHelper
     
     var menuAnisetteURL: String?
     
+    // Headers chosen in Settings
+    var configuredClientInfo: String?
+    var configuredUserAgent: String?
+    var useServerClientInfo = false
+    
     static var shared: AnisetteDataHelper = AnisetteDataHelper()
     
     var loggingFunc: ((String)->Void)?
+    
+    /// Applies the server and headers chosen in Settings. Call before each sign-in.
+    func configure(server: URL, clientInfo: String, userAgent: String, useServerClientInfo: Bool) {
+        self.url = server
+        self.configuredClientInfo = clientInfo
+        self.configuredUserAgent = userAgent
+        self.useServerClientInfo = useServerClientInfo
+        resetClientInfo()
+    }
     
     func resetClientInfo() {
         clientInfo = nil
@@ -345,10 +359,24 @@ final class AnisetteDataHelper
             return
         }
         
-        self.printOut("Using custom client_info")
-                        
-        self.clientInfo = "<iMac18,3> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
-        self.userAgent = "AuthKit/1 (Macintosh; OS X 27.0) (com.apple.akd/1.0)"
+        if useServerClientInfo {
+            self.printOut("Fetching client_info from the anisette server")
+            let clientInfoURL = self.url!.appendingPathComponent("v3").appendingPathComponent("client_info")
+            var request = URLRequest(url: clientInfoURL)
+            request.timeoutInterval = 15
+            let (data, _) = try await URLSession.shared.data(for: request)
+            guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: String],
+                  let clientInfo = json["client_info"],
+                  let userAgent = json["user_agent"] else {
+                throw "Couldn't fetch client info from the anisette server (v1 servers are not supported)"
+            }
+            self.clientInfo = clientInfo
+            self.userAgent = userAgent
+        } else {
+            self.printOut("Using custom client_info")
+            self.clientInfo = configuredClientInfo ?? HeaderPreset.windowsITunes.clientInfo
+            self.userAgent = configuredUserAgent ?? HeaderPreset.windowsITunes.userAgent
+        }
         self.printOut("Client-Info: \(self.clientInfo!)")
         self.printOut("User-Agent: \(self.userAgent!)")
         
@@ -423,6 +451,7 @@ final class AnisetteDataHelper
         let url = menuAnisetteURL
         var request = URLRequest(url: self.url!.appendingPathComponent("v3").appendingPathComponent("get_headers"))
         request.httpMethod = "POST"
+        request.timeoutInterval = 20
         request.httpBody = try! JSONSerialization.data(withJSONObject: [
             "identifier": identifier,
             "adi_pb": adiPb
