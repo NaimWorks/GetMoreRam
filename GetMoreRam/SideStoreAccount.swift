@@ -95,7 +95,7 @@ enum SideStoreAccountImportError: LocalizedError {
         case .missingRequiredField:
             return "Export the account again from SideStore (Settings > Export Account) and import the resulting .sideconf file."
         case .invalidLocalUser:
-            return "The anisette identifier should be a base64 encoded 16-byte value."
+            return "The anisette identifier should be a UUID or a base64 encoded 16-byte value."
         case .invalidFileFormat:
             return "Choose the .sideconf file exported from SideStore."
         case .passwordRequired:
@@ -229,7 +229,10 @@ enum SideStoreAccountImporter {
         guard !email.isEmpty else { throw SideStoreAccountImportError.missingRequiredField("email") }
         guard !adiPB.isEmpty else { throw SideStoreAccountImportError.missingRequiredField("anisetteAdiBlob") }
         guard !localUser.isEmpty else { throw SideStoreAccountImportError.missingRequiredField("anisetteIdentifier") }
-        guard let decodedLocalUser = Data(base64Encoded: localUser), decodedLocalUser.count == 16 else {
+        // SideStore 2.0 stores a UUID string, older versions base64 of 16 bytes
+        let isUUID = UUID(uuidString: localUser) != nil
+        let isLegacy = Data(base64Encoded: localUser)?.count == 16
+        guard isUUID || isLegacy else {
             throw SideStoreAccountImportError.invalidLocalUser
         }
 

@@ -53,6 +53,27 @@ final class AnisetteDataHelper
         deviceId = nil
     }
     
+    // MARK: - Identity formats
+    //
+    // GetMoreRam stores the anisette identifier as base64 of 16 random bytes, sends it as is to the
+    // anisette server and derives X-Apple-I-MD-LU = SHA256(bytes). SideStore 2.0 stores a UUID string,
+    // sends the UUID bytes as lowercase hex and uses fixed defaults for LU and routing info
+    // (see SideSign RemoteAnisetteDataProvider and AnisetteKit). An identity imported from SideStore
+    // must be presented exactly like SideStore does, otherwise the server/Apple don't recognise it.
+    static let sideStoreDefaultLocalUserID = "0000000000000000000000000000000000000000000000000000000000000001"
+    static let sideStoreDefaultRoutingInfo = "17106176"
+
+    /// The identifier, when it uses SideStore 2.0's UUID format
+    var sideStoreIdentifier: UUID? {
+        Keychain.shared.identifier.flatMap { UUID(uuidString: $0) }
+    }
+
+    /// The identifier as the anisette server expects it
+    func serverIdentifier(_ identifier: String) -> String {
+        guard let uuid = UUID(uuidString: identifier) else { return identifier }
+        return withUnsafeBytes(of: uuid.uuid) { Data($0) }.map { String(format: "%02x", $0) }.joined()
+    }
+
     func getAnisetteData(refresh: Bool = false) async throws -> AnisetteData
     {
         
@@ -113,6 +134,9 @@ final class AnisetteDataHelper
             if let machineID = json["X-Apple-I-MD-M"] { formattedJSON["machineID"] = machineID }
             if let oneTimePassword = json["X-Apple-I-MD"] { formattedJSON["oneTimePassword"] = oneTimePassword }
             if let routingInfo = json["X-Apple-I-MD-RINFO"] { formattedJSON["routingInfo"] = routingInfo }
+            if v3, sideStoreIdentifier != nil {
+                formattedJSON["routingInfo"] = Self.sideStoreDefaultRoutingInfo
+            }
             
             if v3 {
                 formattedJSON["deviceDescription"] = self.clientInfo!
@@ -248,7 +272,7 @@ final class AnisetteDataHelper
         switch result {
         case "GiveIdentifier":
             self.printOut("Giving identifier")
-            try await socket.sendJSON(["identifier": Keychain.shared.identifier!])
+            try await socket.sendJSON(["identifier": serverIdentifier(Keychain.shared.identifier!)])
             
         case "GiveStartProvisioningData":
             self.printOut("Getting start provisioning data")
@@ -410,11 +434,19 @@ final class AnisetteDataHelper
             Keychain.shared.identifier = Data(bytes: &bytes, count: bytes.count).base64EncodedString()
         }
         
-        let decoded = Data(base64Encoded: Keychain.shared.identifier!)!
-        self.mdLu = decoded.sha256().hexEncodedString()
+        if let uuid = sideStoreIdentifier {
+            self.printOut("Using SideStore 2.0 identity format")
+            self.mdLu = Self.sideStoreDefaultLocalUserID
+            self.deviceId = uuid.uuidString.uppercased()
+        } else {
+            guard let decoded = Data(base64Encoded: Keychain.shared.identifier!), decoded.count == 16 else {
+                throw "Invalid anisette identifier in the keychain. Tap \"Clean Up Keychain\" and try again."
+            }
+            self.mdLu = decoded.sha256().hexEncodedString()
+            let uuid: UUID = decoded.object()
+            self.deviceId = uuid.uuidString.uppercased()
+        }
         self.printOut("X-Apple-I-MD-LU: \(self.mdLu!)")
-        let uuid: UUID = decoded.object()
-        self.deviceId = uuid.uuidString.uppercased()
         self.printOut("X-Mme-Device-Id: \(self.deviceId!)")
 
         // Client info on Anisette Servers are out of date for latest GSA
@@ -470,7 +502,7 @@ final class AnisetteDataHelper
         request.httpMethod = "POST"
         request.timeoutInterval = 20
         request.httpBody = try! JSONSerialization.data(withJSONObject: [
-            "identifier": identifier,
+            "identifier": serverIdentifier(identifier),
             "adi_pb": adiPb
         ], options: [])
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
