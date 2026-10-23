@@ -153,6 +153,11 @@ final class AnisetteDataHelper
                 formattedJSON["date"] = dateString
                 formattedJSON["locale"] = Locale.current.identifier
                 formattedJSON["timeZone"] = TimeZone.current.abbreviation()
+                if sideStoreIdentifier != nil {
+                    // AnisetteKit defaults
+                    formattedJSON["locale"] = "en_US"
+                    formattedJSON["timeZone"] = "UTC"
+                }
             } else {
                 if let deviceDescription = json["X-MMe-Client-Info"] { formattedJSON["deviceDescription"] = deviceDescription }
                 if let localUserID = json["X-Apple-I-MD-LU"] { formattedJSON["localUserID"] = localUserID }

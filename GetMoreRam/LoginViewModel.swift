@@ -67,7 +67,10 @@ class LoginViewModel: ObservableObject {
         AnisetteDataHelper.shared.loggingFunc = logging
         
         let settings = AuthenticationSettings.shared
-        Authentication.userAgentOverride = settings.useServerClientInfo ? nil : settings.userAgent
+        Authentication.userAgentOverride = settings.useServerClientInfo ? nil : settings.effectiveGrandSlamUserAgent
+        Authentication.twoFactorUserAgentOverride = nil
+        Authentication.useSideSignRequestFormat = false
+        Authentication.xcodeVersion = "27.0 (27A5218g)"
         Authentication.progressHandler = logging
         Authentication.anisetteDataRefreshHandler = {
             try await AnisetteDataHelper.shared.getAnisetteData(refresh: true)
@@ -89,6 +92,13 @@ class LoginViewModel: ObservableObject {
             if settings.useServerClientInfo {
                 // Use the server's user agent for GrandSlam too
                 Authentication.userAgentOverride = AnisetteDataHelper.shared.userAgent
+            }
+            if AnisetteDataHelper.shared.sideStoreIdentifier != nil {
+                // Identity imported from SideStore 2.0: send exactly what SideSign sends
+                logging(text: "SideStore identity: using SideSign request format")
+                Authentication.useSideSignRequestFormat = true
+                Authentication.twoFactorUserAgentOverride = "Xcode"
+                Authentication.xcodeVersion = "26.0 (26A242)"
             }
 
             let (account, session) = try await AppleAPI.shared.authenticate(appleID: appleID, password: password, anisetteData: anisetteData) { [weak self] completionHandler in

@@ -23,7 +23,16 @@ struct HeaderPreset: Identifiable, Hashable {
     let name: String
     let clientInfo: String
     let userAgent: String
+    /// User-Agent of the GrandSlam sign-in requests, "" = same as userAgent
+    var grandSlamUserAgent = ""
 
+    static let sideStore2 = HeaderPreset(
+        id: "sidestore-2",
+        name: "SideStore 2.0 defaults",
+        clientInfo: "<MacBookPro18,3> <macOS;26.6;25F84> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
+        userAgent: "AuthKit/1 (Macintosh; OS X 26.6) (com.apple.akd/1.0)",
+        grandSlamUserAgent: "AuthKit/1 (Macintosh; OS X 26.6) (com.apple.dt.Xcode/26.0)"
+    )
     static let windowsITunes = HeaderPreset(
         id: "windows-itunes",
         name: "Windows / iTunes (SideStore fix)",
@@ -43,7 +52,7 @@ struct HeaderPreset: Identifiable, Hashable {
         userAgent: "AuthKit/1 (Macintosh; OS X 26.6) (com.apple.dt.Xcode/26.0)"
     )
 
-    static let all: [HeaderPreset] = [.windowsITunes, .macAkd, .macXcode]
+    static let all: [HeaderPreset] = [.windowsITunes, .sideStore2, .macAkd, .macXcode]
 }
 
 final class AuthenticationSettings: ObservableObject {
@@ -73,6 +82,14 @@ final class AuthenticationSettings: ObservableObject {
     @Published var useServerClientInfo: Bool { didSet { defaults.set(useServerClientInfo, forKey: "UseServerClientInfo") } }
     @Published var clientInfo: String { didSet { defaults.set(clientInfo, forKey: "AuthClientInfo") } }
     @Published var userAgent: String { didSet { defaults.set(userAgent, forKey: "AuthUserAgent") } }
+    /// User-Agent of the GrandSlam sign-in requests ("" = same as userAgent).
+    /// SideStore sets it separately ("SideSign Configuration").
+    @Published var grandSlamUserAgent: String { didSet { defaults.set(grandSlamUserAgent, forKey: "AuthGrandSlamUserAgent") } }
+
+    var effectiveGrandSlamUserAgent: String {
+        let trimmed = grandSlamUserAgent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? userAgent : trimmed
+    }
 
     private init() {
         var servers = Self.defaultServers
@@ -95,6 +112,7 @@ final class AuthenticationSettings: ObservableObject {
         self.useServerClientInfo = defaults.bool(forKey: "UseServerClientInfo")
         self.clientInfo = defaults.string(forKey: "AuthClientInfo") ?? HeaderPreset.windowsITunes.clientInfo
         self.userAgent = defaults.string(forKey: "AuthUserAgent") ?? HeaderPreset.windowsITunes.userAgent
+        self.grandSlamUserAgent = defaults.string(forKey: "AuthGrandSlamUserAgent") ?? ""
     }
 
     private func saveServers() {
@@ -115,12 +133,15 @@ final class AuthenticationSettings: ObservableObject {
     }
 
     var currentPresetID: String? {
-        HeaderPreset.all.first { $0.clientInfo == clientInfo && $0.userAgent == userAgent }?.id
+        HeaderPreset.all.first {
+            $0.clientInfo == clientInfo && $0.userAgent == userAgent && $0.grandSlamUserAgent == grandSlamUserAgent
+        }?.id
     }
 
     func apply(_ preset: HeaderPreset) {
         clientInfo = preset.clientInfo
         userAgent = preset.userAgent
+        grandSlamUserAgent = preset.grandSlamUserAgent
     }
 
     // MARK: - Editing the list

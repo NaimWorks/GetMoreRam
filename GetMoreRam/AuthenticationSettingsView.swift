@@ -187,9 +187,20 @@ struct AuthenticationHeadersView: View {
             } header: {
                 Text("User-Agent")
             } footer: {
-                Text("Used for anisette provisioning, Apple ID sign-in and two-factor requests. Changes apply on the next sign-in. If Apple keeps refusing, try another preset and \"Clean Up Keychain\".")
+                Text("Used for anisette provisioning, and for sign-in and two-factor requests unless set below.")
             }
             .disabled(settings.useServerClientInfo)
+
+            Section {
+                TextField("Same as User-Agent", text: $settings.grandSlamUserAgent, axis: .vertical)
+                    .font(.system(.footnote, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } header: {
+                Text("Sign-in User-Agent (GrandSlam)")
+            } footer: {
+                Text("SideStore's \"SideSign Configuration\" equivalent. Leave empty to use the User-Agent above. Changes apply on the next sign-in. If Apple keeps refusing, try another preset and \"Clean Up Keychain\".")
+            }
         }
         .navigationTitle("Authentication Headers")
     }

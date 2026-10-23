@@ -23,6 +23,12 @@ public final class Authentication {
     // GetMoreRam patch: configurable headers / hooks for GrandSlam requests.
     /// User-Agent sent to gsa.apple.com (sign-in and 2FA). nil keeps StosSign's defaults.
     public static var userAgentOverride: String?
+    /// User-Agent for the 2FA requests. nil uses userAgentOverride.
+    public static var twoFactorUserAgentOverride: String?
+    /// Shape GrandSlam/2FA requests exactly like SideStore 2.0's SideSign (full cpd, Accept */*,
+    /// buddyml 2FA requests) instead of AltSign#61. Used with identities imported from SideStore.
+    public static var useSideSignRequestFormat = false
+    public static var xcodeVersion = "27.0 (27A5218g)"
     /// Called to get fresh anisette data (new one-time password) between steps.
     public static var anisetteDataRefreshHandler: (() async throws -> AnisetteData)?
     /// Receives human readable progress messages for debugging.
@@ -85,7 +91,28 @@ public final class Authentication {
         let sanitizedAppleID = unsanitizedAppleID.lowercased()
         
         // GetMoreRam patch: same cpd as clients that currently sign in successfully (see rileytestut/AltSign#61)
-        func makeClientDictionary(_ anisetteData: AnisetteData) -> [String: Any] { [
+        func makeClientDictionary(_ anisetteData: AnisetteData) -> [String: Any] {
+            if useSideSignRequestFormat {
+                // SideSign Authentication.swift
+                return [
+                    "bootstrap": true,
+                    "icscrec": true,
+                    "pbe": false,
+                    "prkgen": true,
+                    "svct": "iCloud",
+                    "loc": anisetteData.locale.identifier,
+                    "X-Apple-Locale": anisetteData.locale.identifier,
+                    "X-Apple-I-MD": anisetteData.oneTimePassword,
+                    "X-Apple-I-MD-M": anisetteData.machineID,
+                    "X-Mme-Device-Id": anisetteData.deviceUniqueIdentifier,
+                    "X-Apple-I-MD-LU": anisetteData.localUserID,
+                    "X-Apple-I-MD-RINFO": anisetteData.routingInfo,
+                    "X-Apple-I-SRL-NO": anisetteData.deviceSerialNumber,
+                    "X-Apple-I-Client-Time": dateFormatter.string(from: anisetteData.date),
+                    "X-Apple-I-TimeZone": anisetteData.timeZone.abbreviation() ?? "UTC"
+                ]
+            }
+            return [
             "bootstrap": "true",
             "icscrec": "true",
             "pbe": "false",
@@ -95,7 +122,8 @@ public final class Authentication {
             "X-Apple-I-MD": anisetteData.oneTimePassword,
             "X-Apple-I-MD-M": anisetteData.machineID,
             "X-Mme-Device-Id": anisetteData.deviceUniqueIdentifier
-        ] }
+            ]
+        }
         let clientDictionary = makeClientDictionary(anisetteData)
         
         let context = GSAContext(username: sanitizedAppleID, password: password)
@@ -312,11 +340,16 @@ public final class Authentication {
             "Content-Type": "text/x-xml-plist",
             "X-MMe-Client-Info": anisetteData.deviceDescription,
             "Accept": "text/x-xml-plist",
-            "X-Xcode-Version": "27.0 (27A5218g)",
+            "X-Xcode-Version": xcodeVersion,
             "X-Apple-App-Info": "com.apple.gs.xcode.auth",
             "User-Agent": userAgentOverride ?? "akd/1.0 CFNetwork/808.1.4",
             "Connection": "close"
         ]
+        if useSideSignRequestFormat {
+            httpHeaders["Accept"] = "*/*"
+            httpHeaders["X-Xcode-Version"] = nil
+            httpHeaders["X-Apple-App-Info"] = nil
+        }
         
         let bodyData = try PropertyListSerialization.data(
             fromPropertyList: parameters,
@@ -377,13 +410,14 @@ public final class Authentication {
         let identityToken = "\(dsid):\(idmsToken)"
         let encodedIdentityToken = identityToken.data(using: .utf8)?.base64EncodedString() ?? ""
         
+        let sideSign = useSideSignRequestFormat
         let httpHeaders = [
-            "Accept": "text/x-xml-plist",
+            "Accept": sideSign ? "application/x-buddyml" : "text/x-xml-plist",
             "Accept-Language": "en-us",
-            "Content-Type": "text/x-xml-plist",
-            "User-Agent": userAgentOverride ?? "akd/1.0 CFNetwork/808.1.4",
+            "Content-Type": sideSign ? "application/x-plist" : "text/x-xml-plist",
+            "User-Agent": twoFactorUserAgentOverride ?? userAgentOverride ?? "akd/1.0 CFNetwork/808.1.4",
             "X-Apple-App-Info": "com.apple.gs.xcode.auth",
-            "X-Xcode-Version": "27.0 (27A5218g)",
+            "X-Xcode-Version": xcodeVersion,
             "X-Apple-Identity-Token": encodedIdentityToken,
             "X-Apple-I-MD-M": anisetteData.machineID,
             "X-Apple-I-MD": anisetteData.oneTimePassword,
