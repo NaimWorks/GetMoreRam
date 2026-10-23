@@ -55,7 +55,9 @@ struct AnisetteServersView: View {
             Section {
                 TextField("Name (optional)", text: $newName)
                     .autocorrectionDisabled()
-                TextField("https://ani.example.com", text: $newAddress)
+                TextField(text: $newAddress, prompt: Text(verbatim: "https://ani.example.com")) {
+                    Text("Server URL")
+                }
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
