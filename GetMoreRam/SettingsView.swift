@@ -166,6 +166,11 @@ struct SettingsView: View {
                 Section {
                     Text(viewModel.logs)
                         .font(.system(.subheadline, design: .monospaced))
+                        .textSelection(.enabled)
+                    Button("Copy Logs") {
+                        UIPasteboard.general.string = viewModel.logs
+                    }
+                    .disabled(viewModel.logs.isEmpty)
                 } header: {
                     Text("Debugging")
                 }
@@ -265,6 +270,7 @@ struct SettingsView: View {
     
     func cleanUp() {
         Keychain.shared.adiPb = nil
+        Keychain.shared.adiPbProvisioningContext = nil
         Keychain.shared.identifier = nil
         Keychain.shared.appleIDPassword = nil
         Keychain.shared.appleIDEmailAddress = nil

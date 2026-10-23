@@ -58,6 +58,7 @@ class LoginViewModel: ObservableObject {
         isAuthenticationCancellationRequested = false
         
         func logging(text: String) {
+            NSLog("[GetMoreRam] %@", text)
             Task { @MainActor [weak self] in
                 self?.logs.append("\(text)\n")
             }

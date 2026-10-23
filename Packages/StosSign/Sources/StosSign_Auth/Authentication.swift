@@ -55,6 +55,25 @@ public final class Authentication {
     static func refreshedAnisetteData(_ fallback: AnisetteData) async throws -> AnisetteData {
         try await anisetteDataRefreshHandler?() ?? fallback
     }
+
+    /// gsa.apple.com currently answers a large share of requests with an HTML 503 page,
+    /// independently of their content. Such requests were not processed, so send them again.
+    public static func dataRetryingUnavailable(
+        for request: URLRequest,
+        session: URLSession = AppleAPI.shared.session,
+        attempts: Int = 5
+    ) async throws -> (Data, URLResponse) {
+        var attempt = 1
+        while true {
+            let (data, response) = try await session.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 503, attempt < attempts else {
+                return (data, response)
+            }
+            progressHandler?("Apple returned HTTP 503 for \(request.url?.lastPathComponent ?? "request"), retrying (\(attempt)/\(attempts - 1))")
+            try await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+            attempt += 1
+        }
+    }
     
     public static func authenticate(
         appleID unsanitizedAppleID: String,
@@ -65,23 +84,19 @@ public final class Authentication {
     ) async throws -> (Account, AppleAPISession) {
         let sanitizedAppleID = unsanitizedAppleID.lowercased()
         
-        let clientDictionary: [String: Any] = [
-            "bootstrap": true,
-            "icscrec": true,
-            "pbe": false,
-            "prkgen": true,
+        // GetMoreRam patch: same cpd as clients that currently sign in successfully (see rileytestut/AltSign#61)
+        func makeClientDictionary(_ anisetteData: AnisetteData) -> [String: Any] { [
+            "bootstrap": "true",
+            "icscrec": "true",
+            "pbe": "false",
+            "prkgen": "true",
             "svct": "iCloud",
-            "loc": Locale.current.identifier,
-            "X-Apple-Locale": Locale.current.identifier,
+            "loc": "en_US",
             "X-Apple-I-MD": anisetteData.oneTimePassword,
             "X-Apple-I-MD-M": anisetteData.machineID,
-            "X-Mme-Device-Id": anisetteData.deviceUniqueIdentifier,
-            "X-Apple-I-MD-LU": anisetteData.localUserID,
-            "X-Apple-I-MD-RINFO": anisetteData.routingInfo,
-            "X-Apple-I-SRL-NO": anisetteData.deviceSerialNumber,
-            "X-Apple-I-Client-Time": dateFormatter.string(from: anisetteData.date),
-            "X-Apple-I-TimeZone": TimeZone.current.abbreviation() ?? "PST"
-        ]
+            "X-Mme-Device-Id": anisetteData.deviceUniqueIdentifier
+        ] }
+        let clientDictionary = makeClientDictionary(anisetteData)
         
         let context = GSAContext(username: sanitizedAppleID, password: password)
         guard let publicKey = context.start() else {
@@ -227,29 +242,31 @@ public final class Authentication {
                 throw AppleAPIError.authenticationHandshakeFailed
             }
             
+            // The one-time password was already used by init/complete: get a fresh one,
+            // like AltSign does, otherwise Apple answers -80046.
+            let tokenAnisetteData = try await refreshedAnisetteData(anisetteData)
             let tokenParameters: [String: Any] = [
                 "app": [app],
                 "c": c,
                 "checksum": checksum,
-                "cpd": clientDictionary,
+                "cpd": makeClientDictionary(tokenAnisetteData),
                 "o": "apptokens",
                 "t": idmsToken,
                 "u": dsid
             ]
-            
             
             progressHandler?("GSA: requesting app token")
             let token = try await fetchAuthToken(
                 app: app,
                 parameters: tokenParameters,
                 context: context,
-                anisetteData: anisetteData
+                anisetteData: tokenAnisetteData
             )
             
             let session = AppleAPISession(
                 dsid: dsid,
                 authToken: token,
-                anisetteData: anisetteData
+                anisetteData: tokenAnisetteData
             )
             
             let account = try await AppleAPI.shared.fetchAccount(session: session)
@@ -294,8 +311,10 @@ public final class Authentication {
         var httpHeaders = [
             "Content-Type": "text/x-xml-plist",
             "X-MMe-Client-Info": anisetteData.deviceDescription,
-            "Accept": "*/*",
-            "User-Agent": userAgentOverride ?? "AuthKit/1 (Macintosh; OS X 26.6) (com.apple.dt.Xcode/26.0)",
+            "Accept": "text/x-xml-plist",
+            "X-Xcode-Version": "27.0 (27A5218g)",
+            "X-Apple-App-Info": "com.apple.gs.xcode.auth",
+            "User-Agent": userAgentOverride ?? "akd/1.0 CFNetwork/808.1.4",
             "Connection": "close"
         ]
         
@@ -310,7 +329,7 @@ public final class Authentication {
         request.httpBody = bodyData
         httpHeaders.forEach { request.addValue($0.value, forHTTPHeaderField: $0.key) }
         
-        let (data, response) = try await AppleAPI.shared.session.data(for: request)
+        let (data, response) = try await dataRetryingUnavailable(for: request)
         
         guard let responseDictionary = try? PropertyListSerialization.propertyList(
             from: data,
@@ -326,6 +345,8 @@ public final class Authentication {
         }
         
         let errorCode = status["ec"] as? Int ?? 0
+        let operation = requestParameters["o"] as? String ?? "?"
+        progressHandler?("GSA \(operation): ec=\(errorCode) hsc=\(status["hsc"] as? Int ?? 0) au=\(status["au"] as? String ?? "<none>")\(errorCode == 0 ? "" : " em=\(status["em"] as? String ?? "")")")
         guard errorCode == 0 else {
             switch errorCode {
             case -20101, -22406:
@@ -357,10 +378,10 @@ public final class Authentication {
         let encodedIdentityToken = identityToken.data(using: .utf8)?.base64EncodedString() ?? ""
         
         let httpHeaders = [
-            "Accept": "application/x-buddyml",
+            "Accept": "text/x-xml-plist",
             "Accept-Language": "en-us",
-            "Content-Type": "application/x-plist",
-            "User-Agent": userAgentOverride ?? "Xcode",
+            "Content-Type": "text/x-xml-plist",
+            "User-Agent": userAgentOverride ?? "akd/1.0 CFNetwork/808.1.4",
             "X-Apple-App-Info": "com.apple.gs.xcode.auth",
             "X-Xcode-Version": "27.0 (27A5218g)",
             "X-Apple-Identity-Token": encodedIdentityToken,
@@ -439,7 +460,7 @@ public final class Authentication {
         )
         
         if !codeAlreadySent {
-            let (_, response) = try await AppleAPI.shared.session.data(for: request)
+            let (_, response) = try await dataRetryingUnavailable(for: request)
             progressHandler?("2FA: trusted device request -> HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
         }
         
@@ -488,7 +509,78 @@ public final class Authentication {
         }
     }
 
+    // GetMoreRam patch: JSON SMS flow used by SideStore's apple-private-apis.
+    // The legacy flow always targets phoneNumber.id 1, which may not be the account's number.
     public static func requestSMSTwoFactorCode(
+        dsid: String,
+        idmsToken: String,
+        anisetteData: AnisetteData,
+        verificationHandler: @escaping (@escaping (String?) -> Void) async -> Void
+    ) async throws {
+        func jsonRequest(_ url: URL, method: String, body: [String: Any]? = nil) throws -> URLRequest {
+            var request = makeTwoFactorCodeRequest(url: url, dsid: dsid, idmsToken: idmsToken, anisetteData: anisetteData)
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let body {
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            }
+            return request
+        }
+        func describe(_ data: Data, _ response: URLResponse) -> String {
+            "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0) \(String(data: data.prefix(300), encoding: .utf8) ?? "")"
+        }
+
+        // 1. Trusted phone numbers (201 means Apple already sent an SMS to the first one)
+        let (extrasData, extrasResponse) = try await dataRetryingUnavailable(
+            for: try jsonRequest(URL(string: "https://gsa.apple.com/auth")!, method: "GET"))
+        let extrasStatus = (extrasResponse as? HTTPURLResponse)?.statusCode ?? 0
+        guard let extras = try? JSONSerialization.jsonObject(with: extrasData) as? [String: Any],
+              let phones = extras["trustedPhoneNumbers"] as? [[String: Any]],
+              let phone = phones.first,
+              let phoneID = phone["id"] as? Int else {
+            progressHandler?("2FA: couldn't list trusted phone numbers (\(describe(extrasData, extrasResponse))), using legacy SMS request")
+            try await requestLegacySMSTwoFactorCode(dsid: dsid, idmsToken: idmsToken, anisetteData: anisetteData, verificationHandler: verificationHandler)
+            return
+        }
+        progressHandler?("2FA: trusted numbers: " + phones.map { "\($0["numberWithDialCode"] as? String ?? "?") (id \($0["id"] ?? "?"))" }.joined(separator: ", "))
+
+        // 2. Ask for the SMS unless Apple already sent it
+        if extrasStatus == 201 {
+            progressHandler?("2FA: Apple already sent an SMS to id \(phoneID)")
+        } else {
+            let (data, response) = try await dataRetryingUnavailable(
+                for: try jsonRequest(URL(string: "https://gsa.apple.com/auth/verify/phone/")!, method: "PUT",
+                                     body: ["phoneNumber": ["id": phoneID], "mode": "sms"]))
+            progressHandler?("2FA: SMS request to id \(phoneID) -> \(describe(data, response))")
+            guard let status = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(status) else {
+                throw AppleAPIError.customError(code: (response as? HTTPURLResponse)?.statusCode ?? 0,
+                                                message: "Apple refused to send the SMS code.")
+            }
+        }
+
+        let verificationCode = try await withCheckedThrowingContinuation { continuation in
+            Task {
+                await verificationHandler { code in
+                    continuation.resume(returning: code)
+                }
+            }
+        }
+        guard let code = verificationCode else {
+            throw AppleAPIError.requiresTwoFactorAuthentication
+        }
+
+        // 3. Validate the code
+        let (data, response) = try await dataRetryingUnavailable(
+            for: try jsonRequest(URL(string: "https://gsa.apple.com/auth/verify/phone/securitycode")!, method: "POST",
+                                 body: ["phoneNumber": ["id": phoneID], "mode": "sms", "securityCode": ["code": code]]))
+        progressHandler?("2FA: SMS code check -> \(describe(data, response))")
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw AppleAPIError.incorrectVerificationCode
+        }
+    }
+
+    static func requestLegacySMSTwoFactorCode(
         dsid: String,
         idmsToken: String,
         anisetteData: AnisetteData,

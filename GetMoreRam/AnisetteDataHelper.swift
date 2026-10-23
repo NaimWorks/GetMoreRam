@@ -62,6 +62,17 @@ final class AnisetteDataHelper
         
         self.printOut("Anisette URL: \(self.url!.absoluteString)")
         
+        // Apple checks that Client-Info / User-Agent match the identity that provisioned
+        // the anisette data, so provision again when the server or headers changed.
+        try await fetchClientInfo()
+        let context = "\(self.url!.absoluteString)|\(self.clientInfo!)"
+        if Keychain.shared.adiPb != nil,
+           let previousContext = Keychain.shared.adiPbProvisioningContext,
+           previousContext != context {
+            self.printOut("Server or client info changed since provisioning, provisioning again")
+            Keychain.shared.adiPb = nil
+        }
+        
         let ans : AnisetteData
         if let identifier = Keychain.shared.identifier,
            let adiPb = Keychain.shared.adiPb {
@@ -161,7 +172,7 @@ final class AnisetteDataHelper
             self.printOut("Getting provisioning URLs")
             var request = self.buildAppleRequest(url: URL(string: "https://gsa.apple.com/grandslam/GsService2/lookup")!)
             request.httpMethod = "GET"
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await Authentication.dataRetryingUnavailable(for: request, session: URLSession.shared)
         if
            let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? Dictionary<String, Dictionary<String, Any>>,
            let startProvisioningString = plist["urls"]?["midStartProvisioning"] as? String,
@@ -257,6 +268,7 @@ final class AnisetteDataHelper
                 throw "The server didn't give us an adi.pb file"
             }
             Keychain.shared.adiPb = adiPb
+            Keychain.shared.adiPbProvisioningContext = "\(self.url!.absoluteString)|\(self.clientInfo!)"
             return true
             
         default:
@@ -278,7 +290,7 @@ final class AnisetteDataHelper
         request.httpMethod = "POST"
         request.httpBody = try PropertyListSerialization.data(fromPropertyList: body, format: .xml, options: 0)
         
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, _) = try await Authentication.dataRetryingUnavailable(for: request, session: URLSession.shared)
         if let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? Dictionary<String, Dictionary<String, Any>>,
            let spim = plist["Response"]?["spim"] as? String {
             return spim
@@ -299,7 +311,7 @@ final class AnisetteDataHelper
         request.httpMethod = "POST"
         request.httpBody = try PropertyListSerialization.data(fromPropertyList: body, format: .xml, options: 0)
         
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, _) = try await Authentication.dataRetryingUnavailable(for: request, session: URLSession.shared)
         if let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? Dictionary<String, Dictionary<String, Any>>,
            let ptm = plist["Response"]?["ptm"] as? String,
            let tk = plist["Response"]?["tk"] as? String {

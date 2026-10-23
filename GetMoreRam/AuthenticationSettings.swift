@@ -49,7 +49,10 @@ struct HeaderPreset: Identifiable, Hashable {
 final class AuthenticationSettings: ObservableObject {
     static let shared = AuthenticationSettings()
 
+    // Servers that provision with a Windows ADI first: mac ones reject the Windows
+    // client info with -29003 "environment mismatch".
     static let defaultServers: [AnisetteServer] = [
+        AnisetteServer(name: "SideStore (.app)", address: "https://ani.sidestore.app"),
         AnisetteServer(name: "jkcoxson (mac)", address: "https://mac-ani.jkcoxson.com"),
         AnisetteServer(name: "jkcoxson", address: "https://ani.jkcoxson.com"),
         AnisetteServer(name: "StikStore", address: "https://ani2.stikstore.app"),
