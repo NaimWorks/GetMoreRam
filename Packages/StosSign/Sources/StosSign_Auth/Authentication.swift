@@ -211,25 +211,13 @@ public final class Authentication {
                 throw AppleAPIError.requiresTwoFactorAuthentication
             }
             
-            // SMS 2FA is currently answered with 403 by Apple: ask for a code on the
-            // trusted devices first and only fall back to SMS if Apple refuses.
-            if try await requestTrustedDevicePush(dsid: dsid, idmsToken: idmsToken, anisetteData: anisetteData) {
-                try await requestTrustedDeviceTwoFactorCode(
-                    dsid: dsid,
-                    idmsToken: idmsToken,
-                    anisetteData: anisetteData,
-                    codeAlreadySent: true,
-                    verificationHandler: verificationHandler
-                )
-            } else {
-                progressHandler?("2FA: requesting an SMS code")
-                try await requestSMSTwoFactorCode(
-                    dsid: dsid,
-                    idmsToken: idmsToken,
-                    anisetteData: anisetteData,
-                    verificationHandler: verificationHandler
-                )
-            }
+            progressHandler?("2FA: requesting an SMS code")
+            try await requestSMSTwoFactorCode(
+                dsid: dsid,
+                idmsToken: idmsToken,
+                anisetteData: anisetteData,
+                verificationHandler: verificationHandler
+            )
             
             progressHandler?("2FA: code accepted, signing in again")
             return try await authenticate(
@@ -523,20 +511,6 @@ public final class Authentication {
 
     // GetMoreRam patch: JSON SMS flow used by SideStore's apple-private-apis.
     // The legacy flow always targets phoneNumber.id 1, which may not be the account's number.
-    /// Asks Apple to show a code on the trusted devices. Returns false if Apple refuses.
-    static func requestTrustedDevicePush(dsid: String, idmsToken: String, anisetteData: AnisetteData) async throws -> Bool {
-        let request = makeTwoFactorCodeRequest(
-            url: URL(string: "https://gsa.apple.com/auth/verify/trusteddevice")!,
-            dsid: dsid,
-            idmsToken: idmsToken,
-            anisetteData: anisetteData
-        )
-        let (data, response) = try await dataRetryingUnavailable(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        progressHandler?("2FA: Apple asked for SMS, trusted device request -> HTTP \(status) \(String(data: data.prefix(200), encoding: .utf8) ?? "")")
-        return (200..<300).contains(status)
-    }
-
     public static func requestSMSTwoFactorCode(
         dsid: String,
         idmsToken: String,
