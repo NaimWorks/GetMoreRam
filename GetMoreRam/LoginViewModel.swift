@@ -131,6 +131,9 @@ class LoginViewModel: ObservableObject {
                 throw CancellationError()
             }
             print(error)
+            if error.localizedDescription.contains("-80046") {
+                logging(text: "Apple refused the token (-80046). Use a macOS-ADI server (SideStore (New), jkcoxson…) with the \"macOS current Mac\" preset, then tap \"Clean Up Keychain\" and sign in again.")
+            }
             throw error
         }
     }
@@ -147,6 +150,12 @@ class LoginViewModel: ObservableObject {
             guard let url = URL(string: server.address) else { continue }
             try Task.checkCancellation()
             logging("Trying anisette server \(server.name) (\(server.address))")
+            if server.library != .mac, await AnisetteDataHelper.shared.serverRunsAndroidADI(url) == true {
+                // Apple takes the password and the code, then refuses the token (-80046)
+                logging("Skipping \(server.address): it runs Apple's Android ADI library, whose token Apple refuses (-80046). Use a macOS-ADI server.")
+                lastError = "\(server.name) runs Apple's Android ADI library, which Apple refuses since October 21 (-80046). Pick a macOS-ADI server such as SideStore (New) in Settings › Anisette Servers."
+                continue
+            }
             AnisetteDataHelper.shared.configure(
                 server: url,
                 clientInfo: settings.clientInfo,

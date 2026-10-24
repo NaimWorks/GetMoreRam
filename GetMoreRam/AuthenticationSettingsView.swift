@@ -29,6 +29,9 @@ struct AnisetteServersView: View {
                                 Text(server.address)
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
+                                Text(server.libraryLabel)
+                                    .font(.caption2)
+                                    .foregroundStyle(server.library == .mac ? Color.green : Color.orange)
                             }
                             Spacer()
                             if server.isRemote {
@@ -49,7 +52,7 @@ struct AnisetteServersView: View {
             } header: {
                 Text("Servers")
             } footer: {
-                Text("Tap a server to use it. Swipe to delete. With the toggle on, the other servers are tried in order when the selected one fails.")
+                Text("Tap a server to use it. Swipe to delete. Since October 21, Apple refuses the sign-in token (-80046) for Android-ADI servers: use a macOS-ADI one with the \"macOS current Mac\" headers. With the toggle on, the other macOS-ADI servers are tried when the selected one fails; they share the same anisette identity.")
             }
 
             Section {
@@ -134,6 +137,16 @@ struct AnisetteServersView: View {
         alertTitle = title
         alertMessage = message
         alertShow = true
+    }
+}
+
+extension AnisetteServer {
+    var libraryLabel: String {
+        switch library {
+        case .mac: return "macOS ADI"
+        case .windows: return "Windows ADI"
+        case .android: return "Android ADI or unknown (Apple refuses its token)"
+        }
     }
 }
 

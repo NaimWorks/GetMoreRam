@@ -495,7 +495,9 @@ public final class Authentication {
         
         if !codeAlreadySent {
             let (_, response) = try await dataRetryingUnavailable(for: request)
-            progressHandler?("2FA: trusted device request -> HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            progressHandler?("2FA: trusted device request -> HTTP \(status)"
+                             + ((200..<300).contains(status) ? "" : " (not confirmed; enter a code if one arrived)"))
         }
         
         let verificationCode = try await withCheckedThrowingContinuation { continuation in
@@ -569,6 +571,18 @@ public final class Authentication {
         let (extrasData, extrasResponse) = try await dataRetryingUnavailable(
             for: try jsonRequest(URL(string: "https://gsa.apple.com/auth")!, method: "GET"))
         let extrasStatus = (extrasResponse as? HTTPURLResponse)?.statusCode ?? 0
+        // A bare 403: Apple asked for a code by text and won't send one (macOS-ADI servers,
+        // 2026-10). Send it to the trusted devices instead and ask for it anyway (SideInstaller 1.6.1).
+        func fallBackToTrustedDevices(_ why: String) async throws {
+            progressHandler?("2FA: \(why), sending the code to your trusted devices instead")
+            try await requestTrustedDeviceTwoFactorCode(dsid: dsid, idmsToken: idmsToken, anisetteData: anisetteData,
+                                                        verificationHandler: verificationHandler)
+        }
+        if extrasStatus == 403 {
+            progressHandler?("2FA: GET /auth -> \(describe(extrasData, extrasResponse))")
+            try await fallBackToTrustedDevices("Apple refused to list the trusted phone numbers (403)")
+            return
+        }
         guard let extras = try? JSONSerialization.jsonObject(with: extrasData) as? [String: Any],
               let phones = extras["trustedPhoneNumbers"] as? [[String: Any]],
               let phone = phones.first,
@@ -587,6 +601,10 @@ public final class Authentication {
                 for: try jsonRequest(URL(string: "https://gsa.apple.com/auth/verify/phone/")!, method: "PUT",
                                      body: ["phoneNumber": ["id": phoneID], "mode": "sms"]))
             progressHandler?("2FA: SMS request to id \(phoneID) -> \(describe(data, response))")
+            if (response as? HTTPURLResponse)?.statusCode == 403 {
+                try await fallBackToTrustedDevices("Apple refused to send the SMS (403)")
+                return
+            }
             guard let status = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(status) else {
                 throw AppleAPIError.customError(code: (response as? HTTPURLResponse)?.statusCode ?? 0,
                                                 message: "Apple refused to send the SMS code.")

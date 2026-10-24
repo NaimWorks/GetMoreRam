@@ -74,6 +74,27 @@ final class AnisetteDataHelper
         return withUnsafeBytes(of: uuid.uuid) { Data($0) }.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// What an identity was provisioned for. The macOS-ADI servers take each other's identities,
+    /// so they share one; any other server keeps its own.
+    var provisioningContext: String {
+        let server = AnisetteServer(name: "", address: self.url!.absoluteString)
+        let group = server.library == .mac ? "mac-adi" : self.url!.absoluteString
+        return "\(group)|\(self.clientInfo!)"
+    }
+
+    /// Whether the server makes its data with Apple's Android ADI library, judged from the client it
+    /// hands out (a stock Mac or an Android phone, as anisette-v3-server and omnisette do). nil if unknown.
+    func serverRunsAndroidADI(_ server: URL) async -> Bool? {
+        var request = URLRequest(url: server.appendingPathComponent("v3").appendingPathComponent("client_info"))
+        request.timeoutInterval = 10
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let client = json["client_info"] as? String else { return nil }
+        self.printOut("Server client_info: \(client)")
+        let stockClients = ["<MacBookPro13,2> <macOS;13.1;22C65>", "<MacBookPro15,1> <Mac OS X;10.15.2;19C57>"]
+        return stockClients.contains { client.hasPrefix($0) } || client.contains("<Android;")
+    }
+
     func getAnisetteData(refresh: Bool = false) async throws -> AnisetteData
     {
         
@@ -86,7 +107,7 @@ final class AnisetteDataHelper
         // Apple checks that Client-Info / User-Agent match the identity that provisioned
         // the anisette data, so provision again when the server or headers changed.
         try await fetchClientInfo()
-        let context = "\(self.url!.absoluteString)|\(self.clientInfo!)"
+        let context = provisioningContext
         if Keychain.shared.adiPb != nil,
            let previousContext = Keychain.shared.adiPbProvisioningContext,
            previousContext != context {
@@ -117,9 +138,8 @@ final class AnisetteDataHelper
                     if let message = message,
                        message.contains("-45061") {
                         if Keychain.shared.adiPbProvisioningContext == nil {
-                            // Imported (e.g. from SideStore): don't silently replace it with a new identity
-                            self.printOut("The imported anisette identity is not provisioned on \(self.url!.absoluteString)")
-                            throw "The imported anisette identity doesn't work with \(self.url!.absoluteString). Select the anisette server SideStore uses (and disable \"Try other servers\"), or tap \"Clean Up Keychain\" to start with a new identity."
+                            // Imported (e.g. from SideStore) for another server: make a new one, like SideStore's "Reset adi.pb"
+                            self.printOut("The imported anisette identity is not provisioned on \(self.url!.absoluteString), provisioning a new one (Apple will ask for a code)")
                         }
                         self.printOut("Error message contains -45061 (not provisioned), resetting adi.pb and retrying")
                         Keychain.shared.adiPb = nil
@@ -302,7 +322,7 @@ final class AnisetteDataHelper
                 throw "The server didn't give us an adi.pb file"
             }
             Keychain.shared.adiPb = adiPb
-            Keychain.shared.adiPbProvisioningContext = "\(self.url!.absoluteString)|\(self.clientInfo!)"
+            Keychain.shared.adiPbProvisioningContext = provisioningContext
             return true
             
         default:
@@ -420,8 +440,8 @@ final class AnisetteDataHelper
             self.userAgent = userAgent
         } else {
             self.printOut("Using custom client_info")
-            self.clientInfo = configuredClientInfo ?? HeaderPreset.windowsITunes.clientInfo
-            self.userAgent = configuredUserAgent ?? HeaderPreset.windowsITunes.userAgent
+            self.clientInfo = configuredClientInfo ?? HeaderPreset.currentMac.clientInfo
+            self.userAgent = configuredUserAgent ?? HeaderPreset.currentMac.userAgent
         }
         self.printOut("Client-Info: \(self.clientInfo!)")
         self.printOut("User-Agent: \(self.userAgent!)")
@@ -511,7 +531,15 @@ final class AnisetteDataHelper
             "adi_pb": adiPb
         ], options: [])
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        // Some servers answer part of the requests with a 5xx (new.ani.sidestore.io, 2026-10-23): ask again
+        var attempt = 0
+        var (data, response) = try await URLSession.shared.data(for: request)
+        while let status = (response as? HTTPURLResponse)?.statusCode, (500..<600).contains(status), attempt < 2 {
+            attempt += 1
+            self.printOut("get_headers answered HTTP \(status), asking again")
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            (data, response) = try await URLSession.shared.data(for: request)
+        }
         
         return try await self.extractAnisetteData(data, response as? HTTPURLResponse, v3: true)
 

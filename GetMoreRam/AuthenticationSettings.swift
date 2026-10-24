@@ -16,6 +16,24 @@ struct AnisetteServer: Codable, Hashable, Identifiable {
     var isRemote: Bool = false
 
     var id: String { address }
+
+    /// Apple ADI library the server makes its anisette data with.
+    enum ADILibrary { case mac, windows, android }
+
+    /// Hosts known to run Apple's macOS ADI library, in the order to try them.
+    /// They share identities. Since 2026-10-21 Apple refuses the token (-80046) for anisette
+    /// from the Android library, which most older community servers run (SideInstaller 1.6.1).
+    static let macADIHosts = ["new.ani.sidestore.io", "mac-ani.jkcoxson.com", "ani.iloader.app",
+                              "ani3.stikstore.app", "ani.jkcoxson.com", "ani2.stikstore.app"]
+    static let windowsADIHosts = ["win.ani.sidestore.io"]
+
+    /// The library of a known host, else what the server's name says, else Android's.
+    var library: ADILibrary {
+        let host = URL(string: address)?.host?.lowercased() ?? ""
+        if Self.macADIHosts.contains(host) || name.contains("Mac ADI") { return .mac }
+        if Self.windowsADIHosts.contains(host) || name.contains("Windows ADI") { return .windows }
+        return .android
+    }
 }
 
 struct HeaderPreset: Identifiable, Hashable {
@@ -26,6 +44,14 @@ struct HeaderPreset: Identifiable, Hashable {
     /// User-Agent of the GrandSlam sign-in requests, "" = same as userAgent
     var grandSlamUserAgent = ""
 
+    /// SideStore's default headers (AnisetteKit), a current Mac. What SideInstaller 1.6.1 reports
+    /// through the macOS-ADI servers, for both anisette provisioning and GrandSlam.
+    static let currentMac = HeaderPreset(
+        id: "current-mac",
+        name: "macOS current Mac (Mac ADI servers)",
+        clientInfo: "<MacBookPro18,3> <macOS;26.6;25F84> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
+        userAgent: "AuthKit/1 (Macintosh; OS X 26.6) (com.apple.akd/1.0)"
+    )
     static let sideStore2 = HeaderPreset(
         id: "sidestore-2",
         name: "SideStore 2.0 defaults",
@@ -52,21 +78,26 @@ struct HeaderPreset: Identifiable, Hashable {
         userAgent: "AuthKit/1 (Macintosh; OS X 26.6) (com.apple.dt.Xcode/26.0)"
     )
 
-    static let all: [HeaderPreset] = [.windowsITunes, .sideStore2, .macAkd, .macXcode]
+    static let all: [HeaderPreset] = [.currentMac, .windowsITunes, .sideStore2, .macAkd, .macXcode]
 }
 
 final class AuthenticationSettings: ObservableObject {
     static let shared = AuthenticationSettings()
 
-    // Servers that provision with a Windows ADI first: mac ones reject the Windows
-    // client info with -29003 "environment mismatch".
+    // macOS-ADI servers only (see AnisetteServer.macADIHosts): Apple refuses the token
+    // for Android-ADI anisette, and the Windows-ADI ones have mostly moved to macOS.
     static let defaultServers: [AnisetteServer] = [
-        AnisetteServer(name: "SideStore (.app)", address: "https://ani.sidestore.app"),
-        AnisetteServer(name: "jkcoxson (mac)", address: "https://mac-ani.jkcoxson.com"),
-        AnisetteServer(name: "jkcoxson", address: "https://ani.jkcoxson.com"),
-        AnisetteServer(name: "StikStore", address: "https://ani2.stikstore.app"),
-        AnisetteServer(name: "SideStore", address: "https://ani.sidestore.io"),
+        AnisetteServer(name: "SideStore (New)", address: "https://new.ani.sidestore.io"),
+        AnisetteServer(name: "jkcoxson", address: "https://mac-ani.jkcoxson.com"),
+        AnisetteServer(name: "iLoader (Mac ADI)", address: "https://ani.iloader.app"),
+        AnisetteServer(name: "StikStore (Mac ADI)", address: "https://ani3.stikstore.app"),
+        AnisetteServer(name: "jkcoxson (Mac ADI)", address: "https://ani.jkcoxson.com"),
+        AnisetteServer(name: "StikStore 2 (Mac ADI)", address: "https://ani2.stikstore.app"),
     ]
+    /// Default list before the -80046 fix, replaced when it's still the saved one.
+    private static let previousDefaultAddresses = ["https://ani.sidestore.app", "https://mac-ani.jkcoxson.com",
+                                                   "https://ani.jkcoxson.com", "https://ani2.stikstore.app",
+                                                   "https://ani.sidestore.io"]
     static let defaultServerListURL = "https://servers.sidestore.io/servers.json"
 
     private let defaults = UserDefaults.standard
@@ -99,7 +130,31 @@ final class AuthenticationSettings: ObservableObject {
             servers = saved
         }
 
-        let selected = defaults.string(forKey: "AnisetteServer") ?? Self.defaultServers[0].address
+        var selected = defaults.string(forKey: "AnisetteServer") ?? Self.defaultServers[0].address
+
+        // One-time move to the macOS-ADI servers and SideStore's current Mac (-80046 fix)
+        let migrated = defaults.integer(forKey: "AuthSettingsVersion") >= 2
+        if !migrated {
+            if servers.map(\.address) == Self.previousDefaultAddresses {
+                servers = Self.defaultServers
+            } else {
+                servers.removeAll { Self.previousDefaultAddresses.contains($0.address) && $0.library == .android }
+                for server in Self.defaultServers.reversed() where !servers.contains(where: { $0.address == server.address }) {
+                    servers.insert(server, at: 0)
+                }
+            }
+            if !servers.contains(where: { $0.address == selected && $0.library == .mac }) {
+                selected = Self.defaultServers[0].address
+            }
+            let presetClientInfos = [HeaderPreset.windowsITunes, .sideStore2].map(\.clientInfo)
+            if defaults.string(forKey: "AuthClientInfo").map(presetClientInfos.contains) ?? false {
+                defaults.set(HeaderPreset.currentMac.clientInfo, forKey: "AuthClientInfo")
+                defaults.set(HeaderPreset.currentMac.userAgent, forKey: "AuthUserAgent")
+                defaults.set("", forKey: "AuthGrandSlamUserAgent")
+            }
+            defaults.set(2, forKey: "AuthSettingsVersion")
+        }
+
         if !servers.contains(where: { $0.address == selected }) {
             // Keep the URL typed in older versions of the app
             servers.insert(AnisetteServer(name: "Custom", address: selected), at: 0)
@@ -107,11 +162,12 @@ final class AuthenticationSettings: ObservableObject {
 
         self.servers = servers
         self.selectedServerAddress = selected
+        defaults.set(selected, forKey: "AnisetteServer")
         self.serverListURL = defaults.string(forKey: "AnisetteServerListURL") ?? Self.defaultServerListURL
         self.fallbackToOtherServers = defaults.object(forKey: "AnisetteFallback") as? Bool ?? true
         self.useServerClientInfo = defaults.bool(forKey: "UseServerClientInfo")
-        self.clientInfo = defaults.string(forKey: "AuthClientInfo") ?? HeaderPreset.windowsITunes.clientInfo
-        self.userAgent = defaults.string(forKey: "AuthUserAgent") ?? HeaderPreset.windowsITunes.userAgent
+        self.clientInfo = defaults.string(forKey: "AuthClientInfo") ?? HeaderPreset.currentMac.clientInfo
+        self.userAgent = defaults.string(forKey: "AuthUserAgent") ?? HeaderPreset.currentMac.userAgent
         self.grandSlamUserAgent = defaults.string(forKey: "AuthGrandSlamUserAgent") ?? ""
     }
 
@@ -125,11 +181,16 @@ final class AuthenticationSettings: ObservableObject {
         servers.first { $0.address == selectedServerAddress }
     }
 
-    /// Selected server first, then (if fallback is enabled) every other server.
+    /// Selected server first, then (if fallback is enabled) the other servers on its ADI library,
+    /// which take the same identity, then the macOS-ADI ones. Android-ADI servers are only
+    /// tried when selected (Apple refuses their token).
     var serversToTry: [AnisetteServer] {
         let selected = selectedServer.map { [$0] } ?? []
         guard fallbackToOtherServers else { return selected }
-        return selected + servers.filter { $0.address != selectedServerAddress }
+        let others = servers.filter { $0.address != selectedServerAddress }
+        let sameLibrary = others.filter { $0.library == selectedServer?.library && $0.library != .android }
+        let mac = others.filter { $0.library == .mac && !sameLibrary.contains($0) }
+        return selected + sameLibrary + mac
     }
 
     var currentPresetID: String? {
